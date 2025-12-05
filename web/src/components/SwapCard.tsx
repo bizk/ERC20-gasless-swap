@@ -63,11 +63,13 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     return fee.toFixed(2);
   };
 
+  // TODO call the backend to get the exchange rate of such TX
   const getUsdValue = (token: Token | null, amount: string) => {
     if (!token || !amount || parseFloat(amount) <= 0) return undefined;
     return (parseFloat(amount) * token.price).toFixed(2);
   };
 
+  // TODO Here is where we want to connect to metamask or check if the user has a wallet connected
   const handleContinue = () => {
     if (!walletAddress) {
       setShowConnectWallet(true);
@@ -76,6 +78,7 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     handleSign();
   };
 
+  // TODO Connect wallet to metamask
   const handleConnectWallet = async () => {
     setIsConnecting(true);
     
@@ -95,6 +98,7 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     });
   };
 
+  // TODO sign tx 
   const handleSign = async () => {
     if (!fromToken || !toToken || !fromAmount || !toAmount) return;
     

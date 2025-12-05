@@ -8,6 +8,8 @@ interface SuccessScreenProps {
   onNewSwap: () => void;
 }
 
+
+// TODO show the success screen with the information that comes from the backend as the amount, coins, addresses involved, date and block explorer url.
 export const SuccessScreen = ({ data, onNewSwap }: SuccessScreenProps) => {
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);

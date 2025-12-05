@@ -9,6 +9,7 @@ interface ConnectWalletModalProps {
   isConnecting: boolean;
 }
 
+// TODO metamask connection
 export const ConnectWalletModal = ({
   open,
   onClose,
