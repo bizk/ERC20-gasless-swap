@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { ArrowDownUp, Fuel, Info } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
+import { useAccount, useConnect, useDisconnect } from "wagmi"
+
+
 interface SwapCardProps {
   onSwapSuccess: (data: SwapSuccessData) => void;
 }
@@ -78,13 +81,19 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     handleSign();
   };
 
+
   // TODO Connect wallet to metamask
+  const { address, isConnected } = useAccount()
+  const { connectors, connect, isPending } = useConnect()
+  const { disconnect } = useDisconnect()
+
   const handleConnectWallet = async () => {
     setIsConnecting(true);
     
     // Simulate wallet connection
     // In production, this would use window.ethereum
     await new Promise((resolve) => setTimeout(resolve, 1500));
+
     
     // Mock wallet address
     const mockAddress = "0x742d35Cc6634C0532925a3b844Bc9e7595f2bD42";
@@ -222,6 +231,18 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
               "Swap"
             )}
           </Button>
+
+          {connectors.map((connector) => (
+            <Button
+              key={connector.uid + connector.name}
+              variant="secondary"
+              size="xl"
+              className="w-full mt-6"
+              onClick={() => connect({ connector: connector })}
+            >
+              {connector.name} Connect
+            </Button>
+          ))}
         </div>
       </div>
 
