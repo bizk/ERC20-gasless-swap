@@ -34,6 +34,7 @@ import {
   Implementation, 
   toMetaMaskSmartAccount, 
 } from "@metamask/smart-accounts-kit"
+
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 
 import { useAccount, useConnect, useDisconnect, useWalletClient, usePublicClient } from "wagmi";
@@ -228,6 +229,53 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     })
      
     console.log(`User operation included: https://sepolia.etherscan.io/tx/${txHash}`)
+  }
+
+  const metamaskDelegation = async () => {
+    console.log("METAMASK DELEGATION")
+    const publicClient = createPublicClient({
+      chain: sepolia,
+      transport: http("https://sepolia.rpc.thirdweb.com"),
+    });
+     
+    const paymasterClient = createPimlicoClient({
+      transport: http(`https://api.pimlico.io/v2/sepolia/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`),
+      entryPoint: {
+        address: entryPoint07Address,
+        version: "0.7",
+      },
+    });
+
+    const delegatorAccount = privateKeyToAccount(import.meta.env.VITE_PRIVATE_KEY as Hex);
+
+    const delegatorSmartAccount = await toMetaMaskSmartAccount({
+      client: publicClient,
+      implementation: Implementation.Hybrid,
+      deployParams: [delegatorAccount.address, [], [], []],
+      deploySalt: "0x",
+      signer: { account: delegatorAccount },
+    })
+    
+    const smartAccountClient = createSmartAccountClient({
+      account: delegatorSmartAccount,
+      chain: sepolia,
+      paymaster: paymasterClient,
+      bundlerTransport: http(
+        `https://api.pimlico.io/v2/sepolia/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`,
+      ),
+      userOperation: {
+        estimateFeesPerGas: async () =>
+          (await paymasterClient.getUserOperationGasPrice()).fast,
+        prepareUserOperation: prepareUserOperationForErc20Paymaster(paymasterClient),
+      },
+    });
+
+    const txHash = await smartAccountClient.sendTransaction({
+      to: "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+      value: parseEther("0"),
+    });
+
+    console.log("TX HASH", txHash)
   }
 
     const handleTest = async () => {
@@ -479,7 +527,7 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
             variant="secondary"
             size="xl"
             className="w-full mt-6"
-            onClick={handleTest}
+            onClick={metamaskDelegation}
           >
             Continue
           </Button>
