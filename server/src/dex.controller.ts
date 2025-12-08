@@ -23,8 +23,8 @@ export class DexController {
        Authorization: "Bearer jc4MkIPPVtH4nt86d0b8hT3z1yX9YEhL",
      },
      params: {
-       tokenAddress: "0x111111111117dc0aa78b770fa6a738034120c302",
-       amount: "100000000000",
+       tokenAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+       amount: "10000",
      },
      paramsSerializer: {
        indexes: null,
