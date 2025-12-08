@@ -1,3 +1,4 @@
+ // @ts-expect-error TS2589 
 import { useState, useEffect } from "react";
 import { Token } from "@/data/tokens";
 import { TokenInput } from "./TokenInput";
@@ -6,9 +7,7 @@ import { ConnectWalletModal } from "./ConnectWalletModal";
 import { Button } from "@/components/ui/button";
 import { ArrowDownUp, Fuel, Info } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
-
-import { useAccount, useConnect, useDisconnect } from "wagmi"
-
+import axios from 'axios';
 
 interface SwapCardProps {
   onSwapSuccess: (data: SwapSuccessData) => void;
@@ -24,6 +23,27 @@ export interface SwapSuccessData {
   txHash: string;
   blockExplorerUrl: string;
   date: Date;
+}
+
+import { createPublicClient, http, parseEther } from 'viem'
+import { sepolia } from 'viem/chains'
+import {  entryPoint07Address } from 'viem/account-abstraction'
+import { createSmartAccountClient } from "permissionless";
+
+import { 
+  Implementation, 
+  toMetaMaskSmartAccount, 
+} from "@metamask/smart-accounts-kit"
+import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+
+import { useAccount, useConnect, useDisconnect, useWalletClient, usePublicClient } from "wagmi";
+import { createPimlicoClient } from "permissionless/clients/pimlico"
+
+export interface QuotationResponse {
+  gasPrice: number;
+  to: string;
+  data: string;
+  value: string;
 }
 
 export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
@@ -83,7 +103,6 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
 
 
   // TODO Connect wallet to metamask
-  const { address, isConnected } = useAccount()
   const { connectors, connect, isPending } = useConnect()
   const { disconnect } = useDisconnect()
 
@@ -143,6 +162,168 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     parseFloat(fromAmount) > 0 &&
     toAmount;
 
+    // METAMASK data
+  const client = usePublicClient()
+  const { data: walletClient } = useWalletClient(); // Signer 
+  const { address, isConnected } = useAccount();
+
+  const handleTest = async () => {
+    console.log("test");
+
+    if (!client) {
+      console.error("No publicClient available (wagmi)");
+      return;
+    }
+
+    if (!walletClient || !isConnected) {
+      console.error("No wallet connected. Please connect MetaMask first.");
+      return;
+    }
+
+    const addresses = await walletClient.getAddresses();  
+    const owner = addresses[0];  
+    if (!owner) {
+      console.error("No owner address found")
+      return
+    }
+
+    console.log("Smart account data")
+
+    const chain = sepolia;
+    
+    const smartAccount = await toMetaMaskSmartAccount({ 
+      client, 
+      implementation: Implementation.Hybrid, 
+      deployParams: [owner, [], [], []], 
+      deploySalt: "0x", 
+      signer: { walletClient }, 
+      address: owner,
+      chainId: chain.id,
+    }) 
+
+    console.log("Account", smartAccount?.address)
+
+    // Check account is connected:
+    const code = await client.getBytecode({ address });
+    const isDeployed = !!code && code !== "0x";
+    console.log("Account deployed:", isDeployed);
+
+    const balance = await client.getBalance({ address });
+    console.log("Account balance:", balance.toString());
+
+    const pimlicoClient = createPimlicoClient({
+      chain: chain,
+      transport: http(`https://api.pimlico.io/v2/${chain.id}/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`),
+      entryPoint: {
+        address: entryPoint07Address,
+        version: "0.7",
+      },
+    })
+
+    if (!pimlicoClient) {
+      console.error("Failed to create paymaster")
+      return
+    }
+
+    // #####
+    console.log("PUBLICO TEST INIT")
+    const publicClientTest = createPublicClient({
+      chain,
+      transport: http("https://sepolia.rpc.thirdweb.com"),
+    })
+    const pk = generatePrivateKey();
+    // const accountTest = await toSafeSmartAccount({
+    //   client: publicClientTest,
+    //   owners: [privateKeyToAccount(pk)],
+    //   entryPoint: {
+    //     address: entryPoint07Address,
+    //     version: "0.7",
+    //   },
+    //   version: "1.4.1",
+    // })
+
+    const ownerTest = privateKeyToAccount(pk);
+    const delegatorSmartAccount = await toMetaMaskSmartAccount({
+      client: publicClientTest,
+      implementation: Implementation.Hybrid,
+      deployParams: [ownerTest.address, [], [], []],
+      deploySalt: "0x",
+      signer: { walletClient: walletClient },
+      address: ownerTest.address
+    });
+     
+    console.log("DELEGATOR SMART ACCOUNT", delegatorSmartAccount?.address)
+
+    const smartAccountClient = createSmartAccountClient({
+      account: delegatorSmartAccount,
+      chain: sepolia,
+      paymaster: pimlicoClient,
+      bundlerTransport: http(
+        `https://api.pimlico.io/v2/${chain.id}/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`,
+      ),
+      userOperation: {
+        estimateFeesPerGas: async () =>
+          (await pimlicoClient.getUserOperationGasPrice()).fast,
+      },
+    });
+
+    // TODO backend call 
+      console.log("BACKEND CALL - APPROVE TRANSACTION")
+      const url = `${import.meta.env.VITE_API_URL}/dex/quotation`;
+
+      let approvalData: QuotationResponse | null = null;
+      try {
+        const response = await axios.get(url);
+        approvalData = response.data;
+      } catch (error) {
+        console.error("BACKEND CALL - APPROVE TRANSACTION ERROR", error);
+        return;
+      }
+
+      if (!approvalData) {
+        console.error("No response from backend")
+        return
+      }
+
+      // Approve tx
+      console.log("APPROVE TX", approvalData.to, approvalData.data, approvalData.value)
+      const approveTx = await smartAccountClient.sendTransaction({
+        to: approvalData.to,
+        data: approvalData.data,
+        value: approvalData.value,
+      })
+
+      console.log("APPROVE TX HASH", approveTx)
+
+    // #######
+    
+    // const txHash = await smartAccountClient.sendTransaction({
+    //   to: "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+    //   data: "0x1234"
+    // })
+    // console.log("TX HASH", txHash)
+    // const hash = await smartAccountClient.sendTransaction({
+    //   account: delegatorSmartAccount,
+    //   calls: [{
+    //     to: '0x4dd7e1d8456509a126a743fb1bf0118431d74787',
+    //     value: parseEther('1')
+    //   }],
+    //   factory: '0x1234567890123456789012345678901234567890', 
+    //   factoryData: '0xdeadbeef',
+    // })
+    // #####
+
+    console.log("Paymaster created")
+    console.log("Creating smart account client")
+   
+     
+    // const receipt = await smartAccountClient.
+    // .waitForUserOperationReceipt({ hash }) 
+
+    // console.log("Receipt", receipt)
+
+    console.log("Finished test");
+  }
   return (
     <>
       <div className="w-full max-w-md mx-auto">
@@ -230,6 +411,15 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
             ) : (
               "Swap"
             )}
+          </Button>
+
+          <Button
+            variant="secondary"
+            size="xl"
+            className="w-full mt-6"
+            onClick={handleTest}
+          >
+            Continue
           </Button>
 
           {connectors.map((connector) => (
