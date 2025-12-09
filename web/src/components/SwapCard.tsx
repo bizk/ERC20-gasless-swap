@@ -1,13 +1,21 @@
  // @ts-expect-error TS2589 
-import { useState, useEffect } from "react";
-import { Token } from "@/data/tokens";
+import { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
+import { Token, tokens } from "@/data/tokens";
 import { TokenInput } from "./TokenInput";
 import { TokenSelectModal } from "./TokenSelectModal";
 import { ConnectWalletModal } from "./ConnectWalletModal";
 import { Button } from "@/components/ui/button";
-import { ArrowDownUp, Fuel, Info } from "lucide-react";
+import { ArrowDownUp, Fuel, Info, CheckCircle2, ExternalLink, Copy } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import axios from 'axios';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface SwapCardProps {
   onSwapSuccess: (data: SwapSuccessData) => void;
@@ -52,6 +60,7 @@ export interface QuotationResponse {
 }
 
 export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [fromToken, setFromToken] = useState<Token | null>(null);
   const [toToken, setToToken] = useState<Token | null>(null);
   const [fromAmount, setFromAmount] = useState("");
@@ -61,10 +70,45 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [isSigning, setIsSigning] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [showSuccessDialog, setShowSuccessDialog] = useState(false);
+  const [showConnectingWallet, setShowConnectingWallet] = useState(false);
+  const [pendingSwapAfterConnect, setPendingSwapAfterConnect] = useState(false);
+  const [swapResult, setSwapResult] = useState<{
+    txHash: string;
+    fromAddress: string;
+    toAddress: string;
+    fee: string;
+    explorerUrl: string;
+  } | null>(null);
 
   const FEE_PERCENTAGE = 0.3;
 
-  // Calculate output amount based on token prices
+  useEffect(() => {
+    const ethToken = tokens.find((token) => token.symbol === "ETH");
+    const usdcToken = tokens.find((token) => token.symbol === "USDC");
+    
+    if (ethToken) {
+      setFromToken((prev) => prev || ethToken);
+    }
+    if (usdcToken) {
+      setToToken((prev) => prev || usdcToken);
+    }
+    setFromAmount((prev) => prev || "0.0001");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Store selected coin in URL params
+  useEffect(() => {
+    if (fromToken) {
+      setSearchParams((prev) => {
+        const newParams = new URLSearchParams(prev);
+        newParams.set("fromToken", fromToken.address);
+        return newParams;
+      });
+    }
+  }, [fromToken, setSearchParams]);
+
   useEffect(() => {
     if (fromToken && toToken && fromAmount && parseFloat(fromAmount) > 0) {
       const inputValue = parseFloat(fromAmount) * fromToken.price;
@@ -97,13 +141,36 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     return (parseFloat(amount) * token.price).toFixed(2);
   };
 
-  // TODO Here is where we want to connect to metamask or check if the user has a wallet connected
-  const handleContinue = () => {
-    if (!walletAddress) {
-      setShowConnectWallet(true);
+  // Handle swap button click
+  const handleSwap = async () => {
+    if (!isConnected) {
+      // Show connecting modal and connect wallet
+      setShowConnectingWallet(true);
+      setPendingSwapAfterConnect(true);
+      const connector = connectors[0];
+      if (connector) {
+        await connect({ connector });
+      }
       return;
     }
-    handleSign();
+    
+    // Wallet is connected, proceed with swap
+    setIsProcessing(true);
+    try {
+      const result = await inchSwap();
+      if (result) {
+        setSwapResult(result);
+        setShowSuccessDialog(true);
+      }
+    } catch (error) {
+      toast({
+        title: "Swap Failed",
+        description: error instanceof Error ? error.message : "An error occurred during the swap.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
 
@@ -168,56 +235,51 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     parseFloat(fromAmount) > 0 &&
     toAmount;
 
+  useEffect(() => {
+    if (isValidSwap) {
+      console.log("get quotation");
+    }
+  }, [isValidSwap]);
+
     // METAMASK data
-  // const client = usePublicClient()
   const { data: walletClient } = useWalletClient(); // Signer 
   const { address, isConnected } = useAccount();
 
-  const getUsdtBalance = async () => {
-      console.log("test");
+  useEffect(() => {
+    if (isConnected && pendingSwapAfterConnect && showConnectingWallet) {
+      setShowConnectingWallet(false);
+      setPendingSwapAfterConnect(false);
+      setTimeout(() => {
+        setIsProcessing(true);
+        inchSwap()
+          .then((result) => {
+            if (result) {
+              setSwapResult(result);
+              setShowSuccessDialog(true);
+            }
+          })
+          .catch((error) => {
+            toast({
+              title: "Swap Failed",
+              description: error instanceof Error ? error.message : "An error occurred during the swap.",
+              variant: "destructive",
+            });
+          })
+          .finally(() => {
+            setIsProcessing(false);
+          });
+      }, 2000);
+    }
+  }, [isConnected, pendingSwapAfterConnect, showConnectingWallet]);
 
-      if (!client) {
-        console.error("No publicClient available (wagmi)");
-        return;
-      }
 
-      if (!walletClient || !isConnected) {
-        console.error("No wallet connected. Please connect MetaMask first.");
-        return;
-      }
-
-      const addresses = await walletClient.getAddresses();  
-      const owner = addresses[0];  
-      if (!owner) {
-        console.error("No owner address found")
-        return
-      }
-
-      console.log("Smart account data")
-      
-      const smartAccount = await toMetaMaskSmartAccount({ 
-        client, 
-        implementation: Implementation.Hybrid, 
-        deployParams: [owner, [], [], []], 
-        deploySalt: "0x", 
-        signer: { walletClient }, 
-        address: owner
-      }) 
-      console.log(`Smart account address: https://sepolia.etherscan.io/address/${smartAccount?.address}`)
-
-      console.log("Account", smartAccount?.address)
-
-      const code = await client.getBytecode({ address });
-      const isDeployed = !!code && code !== "0x";
-      console.log("Account deployed:", isDeployed);
-
-      const balance = await client.getBalance({ address });
-      console.log("Account balance:", balance.toString());
-  }
-
-  const { address: ownerAddress } = useAccount();
-
-  const inchSwap = async () => {
+  const inchSwap = async (): Promise<{
+    txHash: string;
+    fromAddress: string;
+    toAddress: string;
+    fee: string;
+    explorerUrl: string;
+  } | null> => {
     console.log("INCH SWAP")
 
     // We would need to adapt the urls and http to adapt to the network
@@ -266,21 +328,21 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     const approvalData = await axios.get(`${import.meta.env.VITE_API_URL}/dex/approval?tokenAddress=${fromToken?.address}&amount=${amount}`);
     console.log("APPROVAL DATA", approvalData.data);
 
-    const { to, data, value } = approvalData.data;
+    // const { to, data, value } = approvalData.data;
 
-    const txHash = await smartAccountClient.sendUserOperation({
-      account: delegatorSmartAccount,
-      calls: [{
-        to: to as Hex,
-        data: data as Hex,
-        value: 0n
-      }]
-    })
+    // const txHash = await smartAccountClient.sendUserOperation({
+    //   account: delegatorSmartAccount,
+    //   calls: [{
+    //     to: to as Hex,
+    //     data: data as Hex,
+    //     value: 0n
+    //   }]
+    // })
 
-    console.log("USER APPROVAL OP HASH", txHash)
+    // console.log("USER APPROVAL OP HASH", txHash)
 
-    const approvalReceipt = await smartAccountClient.waitForUserOperationReceipt({ hash: txHash });
-    console.log("Approval receipt", approvalReceipt)
+    // const approvalReceipt = await smartAccountClient.waitForUserOperationReceipt({ hash: txHash });
+    // console.log("Approval receipt", approvalReceipt)
  
     // const swapResponse = await axios.post(`${import.meta.env.VITE_API_URL}/dex/swap`, {
     //   "tokenSrc": "eth",
@@ -309,6 +371,25 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
 
     // const swapReceipt = await smartAccountClient.waitForUserOperationReceipt({ hash: swapHash });
     // console.log("Swap receipt", swapReceipt)
+    
+    // TODO: Replace with actual transaction data from swapReceipt
+    // For now, return mock data structure
+    if (!address || !fromToken || !fromAmount) {
+      return null;
+    }
+
+    const feeAmount = getFeeAmount() || "0";
+    const txHash = "0x" + Array.from({ length: 64 }, () => 
+      Math.floor(Math.random() * 16).toString(16)
+    ).join("");
+    
+    return {
+      txHash,
+      fromAddress: address,
+      toAddress: address, // TODO: Replace with actual recipient address
+      fee: feeAmount,
+      explorerUrl: `https://etherscan.io/tx/${txHash}`,
+    };
   }
 
   return (
@@ -381,45 +462,22 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
             variant="gradient"
             size="xl"
             className="w-full mt-6"
-            disabled={!isValidSwap || isSigning}
-            onClick={handleContinue}
+            disabled={!isValidSwap || isSigning || isProcessing}
+            onClick={handleSwap}
           >
-            {isSigning ? (
+            {isSigning || isProcessing ? (
               <span className="flex items-center gap-2">
                 <div className="w-5 h-5 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
-                Signing Transaction...
+                Processing...
               </span>
             ) : !fromToken || !toToken ? (
               "Select tokens"
             ) : !fromAmount || parseFloat(fromAmount) <= 0 ? (
               "Enter amount"
-            ) : !walletAddress ? (
-              "Connect Wallet"
             ) : (
               "Swap"
             )}
           </Button>
-
-          <Button
-            variant="secondary"
-            size="xl"
-            className="w-full mt-6"
-            onClick={inchSwap}
-          >
-            Continue
-          </Button>
-
-          {connectors.map((connector) => (
-            <Button
-              key={connector.uid + connector.name}
-              variant="secondary"
-              size="xl"
-              className="w-full mt-6"
-              onClick={() => connect({ connector: connector })}
-            >
-              {connector.name} Connect
-            </Button>
-          ))}
         </div>
       </div>
 
@@ -442,6 +500,138 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
         onConnect={handleConnectWallet}
         isConnecting={isConnecting}
       />
+
+      <Dialog open={showConnectingWallet}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Connecting to Wallet</DialogTitle>
+            <DialogDescription>
+              Please approve the connection request in your wallet.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-center py-4">
+            <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showConnectingWallet}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Connecting to Wallet</DialogTitle>
+            <DialogDescription>
+              Please approve the connection request in your wallet.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-center py-4">
+            <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isProcessing}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Processing Swap</DialogTitle>
+            <DialogDescription>
+              Your swap transaction is being processed. Please wait...
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-center py-4">
+            <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showSuccessDialog} onOpenChange={setShowSuccessDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <div className="flex flex-col items-center text-center space-y-4 py-4">
+              <div className="w-20 h-20 rounded-full bg-gradient-to-br from-green-500/20 to-primary/20 flex items-center justify-center">
+                <CheckCircle2 className="w-12 h-12 text-green-500" />
+              </div>
+              <DialogTitle className="text-2xl">Swap Successful!</DialogTitle>
+              <DialogDescription className="text-base">
+                Your swap has been completed successfully.
+              </DialogDescription>
+            </div>
+          </DialogHeader>
+          
+          {swapResult && (
+            <div className="space-y-3 text-left bg-secondary/30 rounded-xl p-4 mb-4">
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-muted-foreground">From Address</span>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(swapResult.fromAddress);
+                    toast({
+                      title: "Copied!",
+                      description: "Address copied to clipboard",
+                    });
+                  }}
+                  className="flex items-center gap-1 font-mono text-xs hover:text-primary transition-colors"
+                >
+                  {swapResult.fromAddress.slice(0, 8)}...{swapResult.fromAddress.slice(-6)}
+                  <Copy className="w-3 h-3" />
+                </button>
+              </div>
+              
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-muted-foreground">To Address</span>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(swapResult.toAddress);
+                    toast({
+                      title: "Copied!",
+                      description: "Address copied to clipboard",
+                    });
+                  }}
+                  className="flex items-center gap-1 font-mono text-xs hover:text-primary transition-colors"
+                >
+                  {swapResult.toAddress.slice(0, 8)}...{swapResult.toAddress.slice(-6)}
+                  <Copy className="w-3 h-3" />
+                </button>
+              </div>
+              
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-muted-foreground">Fee</span>
+                <span className="font-medium">${swapResult.fee}</span>
+              </div>
+              
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-muted-foreground">Transaction</span>
+                <button
+                  onClick={() => window.open(swapResult.explorerUrl, "_blank")}
+                  className="flex items-center gap-1 font-mono text-xs hover:text-primary transition-colors"
+                >
+                  {swapResult.txHash.slice(0, 8)}...{swapResult.txHash.slice(-6)}
+                  <ExternalLink className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          )}
+          
+          <div className="flex flex-col gap-3 pb-4">
+            {swapResult && (
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => window.open(swapResult.explorerUrl, "_blank")}
+              >
+                <ExternalLink className="w-4 h-4 mr-2" />
+                View on Block Explorer
+              </Button>
+            )}
+            <Button
+              variant="gradient"
+              onClick={() => setShowSuccessDialog(false)}
+              className="w-full"
+            >
+              Close
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 };
