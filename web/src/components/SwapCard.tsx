@@ -25,7 +25,7 @@ export interface SwapSuccessData {
   date: Date;
 }
 
-import { createPublicClient, Hex, http, parseEther } from 'viem'
+import { createPublicClient, erc20Abi, formatUnits, Hex, http, parseEther } from 'viem'
 import { sepolia, mainnet, base } from 'viem/chains'
 import {  entryPoint07Address } from 'viem/account-abstraction'
 import { createSmartAccountClient } from "permissionless";
@@ -41,6 +41,8 @@ import { useAccount, useConnect, useDisconnect, useWalletClient, usePublicClient
 import { createPimlicoClient } from "permissionless/clients/pimlico"
 import { prepareUserOperationForErc20Paymaster } from 'permissionless/experimental/pimlico';
 import { toSafeSmartAccount } from 'permissionless/accounts';
+import { buildGaslessUniswapCall, buildSmartAccount, ETH_TOKEN, USDC_TOKEN } from "@/lib/swap";
+import { getApprovalData } from "@/lib/1inch";
 
 export interface QuotationResponse {
   gasPrice: number;
@@ -171,114 +173,7 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
   const { data: walletClient } = useWalletClient(); // Signer 
   const { address, isConnected } = useAccount();
 
-  const thisShouldntwork = async () => {
-    const apiKey = import.meta.env.VITE_PIMLICO_API_KEY
-    if (!apiKey) throw new Error("Missing PIMLICO_API_KEY")
-    
-      const privateKey =
-      (import.meta.env.VITE_PRIVATE_KEY as Hex) ??
-      (() => {
-        const pk = generatePrivateKey()
-        console.log("PRIVATE KEY GENERATED", pk)
-        return pk
-      })()
-
-    const publicClient = createPublicClient({
-      chain: sepolia,
-      transport: http("https://sepolia.rpc.thirdweb.com"),
-    })
-    
-    const pimlicoUrl = `https://api.pimlico.io/v2/sepolia/rpc?apikey=${apiKey}`
-    
-    const pimlicoClient = createPimlicoClient({
-      transport: http(pimlicoUrl),
-      entryPoint: {
-        address: entryPoint07Address,
-        version: "0.7",
-      },
-    })
-
-    const account = await toSafeSmartAccount({
-      client: publicClient,
-      owners: [privateKeyToAccount(privateKey)],
-      entryPoint: {
-        address: entryPoint07Address,
-        version: "0.7",
-      }, // global entrypoint
-      version: "1.4.1",
-    })
-     
-    console.log(`Smart account address: https://sepolia.etherscan.io/address/${account.address}`)
-
-    const smartAccountClient = createSmartAccountClient({
-      account,
-      chain: sepolia,
-      bundlerTransport: http(pimlicoUrl),
-      paymaster: pimlicoClient,
-      userOperation: {
-        estimateFeesPerGas: async () => {
-          return (await pimlicoClient.getUserOperationGasPrice()).fast
-        },
-      },
-    })
-
-    const txHash = await smartAccountClient.sendTransaction({
-      to: "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
-      value: 0n,
-      data: "0x1234",
-    })
-     
-    console.log(`User operation included: https://sepolia.etherscan.io/tx/${txHash}`)
-  }
-
-  const metamaskDelegation = async () => {
-    console.log("METAMASK DELEGATION")
-    const publicClient = createPublicClient({
-      chain: sepolia,
-      transport: http("https://sepolia.rpc.thirdweb.com"),
-    });
-     
-    const paymasterClient = createPimlicoClient({
-      transport: http(`https://api.pimlico.io/v2/sepolia/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`),
-      entryPoint: {
-        address: entryPoint07Address,
-        version: "0.7",
-      },
-    });
-
-    const delegatorAccount = privateKeyToAccount(import.meta.env.VITE_PRIVATE_KEY as Hex);
-
-    const delegatorSmartAccount = await toMetaMaskSmartAccount({
-      client: publicClient,
-      implementation: Implementation.Hybrid,
-      deployParams: [delegatorAccount.address, [], [], []],
-      deploySalt: "0x",
-      signer: { account: delegatorAccount },
-    })
-    
-    const smartAccountClient = createSmartAccountClient({
-      account: delegatorSmartAccount,
-      chain: sepolia,
-      paymaster: paymasterClient,
-      bundlerTransport: http(
-        `https://api.pimlico.io/v2/sepolia/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`,
-      ),
-      userOperation: {
-        estimateFeesPerGas: async () =>
-          (await paymasterClient.getUserOperationGasPrice()).fast,
-        prepareUserOperation: prepareUserOperationForErc20Paymaster(paymasterClient),
-      },
-    });
-
-    const txHash = await smartAccountClient.sendTransaction({
-      to: "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
-      value: parseEther("0"),
-    });
-
-    console.log("TX HASH", txHash)
-  }
-
-    const handleTest = async () => {
+  const getUsdtBalance = async () => {
       console.log("test");
 
       if (!client) {
@@ -299,8 +194,6 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
       }
 
       console.log("Smart account data")
-
-      const chain = sepolia;
       
       const smartAccount = await toMetaMaskSmartAccount({ 
         client, 
@@ -320,120 +213,104 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
 
       const balance = await client.getBalance({ address });
       console.log("Account balance:", balance.toString());
+  }
 
-      const pimlicoClient = createPimlicoClient({
-        chain: chain,
-        transport: http(`https://api.pimlico.io/v2/${chain.id}/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`),
-        entryPoint: {
-          address: entryPoint07Address,
-          version: "0.7",
-        },
-      })
+  const { address: ownerAddress } = useAccount();
 
-      if (!pimlicoClient) {
-        console.error("Failed to create paymaster")
-        return
-      }
+  const inchSwap = async () => {
+    console.log("INCH SWAP")
 
-      // #####
+    // We would need to adapt the urls and http to adapt to the network
+    const pimlicoUrl = `https://api.pimlico.io/v2/1/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`
 
-      // const pk = generatePrivateKey();
-      // const ownerTest = privateKeyToAccount(pk);
-      // const delegatorSmartAccount = await toMetaMaskSmartAccount({
-      //   client,
-      //   implementation: Implementation.Hybrid,
-      //   deployParams: [ownerTest.address, [], [], []],
-      //   deploySalt: "0x",
-      //   signer: { walletClient },
-      //   address: ownerTest.address
-      // });
-      
-      console.log("DELEGATOR SMART ACCOUNT", smartAccount?.address)
+    const publicClient = createPublicClient({
+      chain: mainnet,
+      transport: http("https://eth.blockrazor.xyz"),
+    });
+     
+    const paymasterClient = createPimlicoClient({
+      transport: http(pimlicoUrl),
+      entryPoint: {
+        address: entryPoint07Address,
+        version: "0.7",
+      },
+    });
 
-      const smartAccountClient = createSmartAccountClient({
-        account: smartAccount,
-        chain: sepolia,
-        paymaster: pimlicoClient,
-        bundlerTransport: http(
-          `https://api.pimlico.io/v2/${chain.id}/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`,
-        ),
-        userOperation: {
-          estimateFeesPerGas: async () => {
-            return (await pimlicoClient.getUserOperationGasPrice()).fast
-          },
-          // prepareUserOperation: prepareUserOperationForErc20Paymaster(pimlicoClient),
-        },
-      });
+    const delegatorAccount = privateKeyToAccount(import.meta.env.VITE_PRIVATE_KEY as Hex);
 
-      // TODO backend call 
-        console.log("BACKEND CALL - APPROVE TRANSACTION")
-        const url = `${import.meta.env.VITE_API_URL}/dex/quotation`;
+    const delegatorSmartAccount = await toMetaMaskSmartAccount({
+      client: publicClient,
+      implementation: Implementation.Hybrid,
+      deployParams: [delegatorAccount.address, [], [], []],
+      deploySalt: "0x",
+      signer: { account: delegatorAccount },
+    })
 
-        let approvalData: QuotationResponse | null = null;
-        try {
-          const response = await axios.get(url);
-          approvalData = response.data;
-        } catch (error) {
-          console.error("BACKEND CALL - APPROVE TRANSACTION ERROR", error);
-          return;
-        }
-
-        if (!approvalData) {
-          console.error("No response from backend")
-          return
-        }
-
-        // Approve tx
-        console.log("APPROVE TX", approvalData.to, approvalData.data, approvalData.value)
-
-        const token = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-
-        console.log("SEND TRANSACTION - TOKEN", token)
-        // const hash = await smartAccountClient.sendTransaction({
-        //   account: smartAccount,
-        //   calls: [
-        //     {
-        //       to: approvalData.to,
-        //       value: parseEther(approvalData.value),
-        //       data: approvalData.data,
-        //     },
-        //   ],
-        //   paymasterContext: {
-        //     token,
-        //   },
-        // })
-
-      await thisShouldntwork();        
-        
-      // #######
-      
-      // const txHash = await smartAccountClient.sendTransaction({
-      //   to: "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
-      //   data: "0x1234"
-      // })
-      // console.log("TX HASH", txHash)
-      // const hash = await smartAccountClient.sendTransaction({
-      //   account: delegatorSmartAccount,
-      //   calls: [{
-      //     to: '0x4dd7e1d8456509a126a743fb1bf0118431d74787',
-      //     value: parseEther('1')
-      //   }],
-      //   factory: '0x1234567890123456789012345678901234567890', 
-      //   factoryData: '0xdeadbeef',
-      // })
-      // #####
-
-      console.log("Paymaster created")
-      console.log("Creating smart account client")
+    console.log("DELEGATOR SMART ACCOUNT: https://etherscan.io/address/" + delegatorSmartAccount?.address)
     
-      
-      // const receipt = await smartAccountClient.
-      // .waitForUserOperationReceipt({ hash }) 
+    const smartAccountClient = createSmartAccountClient({
+      account: delegatorSmartAccount,
+      chain: mainnet,
+      paymaster: paymasterClient,
+      bundlerTransport: http(
+        pimlicoUrl,
+      ),
+      userOperation: {
+        estimateFeesPerGas: async () =>
+          (await paymasterClient.getUserOperationGasPrice()).fast,
+        prepareUserOperation: prepareUserOperationForErc20Paymaster(paymasterClient),
+      },
+    });
 
-      // console.log("Receipt", receipt)
+    const amount = "10"
+    const approvalData = await axios.get(`${import.meta.env.VITE_API_URL}/dex/approval?tokenAddress=${fromToken?.address}&amount=${amount}`);
+    console.log("APPROVAL DATA", approvalData.data);
 
-      console.log("Finished test");
-    }
+    const { to, data, value } = approvalData.data;
+
+    const txHash = await smartAccountClient.sendUserOperation({
+      account: delegatorSmartAccount,
+      calls: [{
+        to: to as Hex,
+        data: data as Hex,
+        value: 0n
+      }]
+    })
+
+    console.log("USER APPROVAL OP HASH", txHash)
+
+    const approvalReceipt = await smartAccountClient.waitForUserOperationReceipt({ hash: txHash });
+    console.log("Approval receipt", approvalReceipt)
+ 
+    // const swapResponse = await axios.post(`${import.meta.env.VITE_API_URL}/dex/swap`, {
+    //   "tokenSrc": "eth",
+    //   "tokenDst": "usdc",
+    //   "from": "0x1Db2876267D2AdC9CA7eA628D53006282e683d5d",
+    //   "chainId": 1,
+    //   "amount": 1
+    // });
+    // console.log("SWAP DATA", swapResponse.data);
+
+    // const { to: swapTo, data: swapData, value: swapValue } = swapResponse.data.tx;
+    // console.log("SWAP TO", swapTo)
+    // console.log("SWAP DATA", swapData)
+    // console.log("SWAP VALUE", swapValue)
+
+    // const swapHash = await smartAccountClient.sendUserOperation({
+    //   account: delegatorSmartAccount,
+    //   calls: [{
+    //     to: swapTo as Hex,
+    //     data: swapData as Hex,
+    //     value: swapValue as bigint,
+    //   }]
+    // })
+
+    // console.log("SWAP HASH", swapHash)
+
+    // const swapReceipt = await smartAccountClient.waitForUserOperationReceipt({ hash: swapHash });
+    // console.log("Swap receipt", swapReceipt)
+  }
+
   return (
     <>
       <div className="w-full max-w-md mx-auto">
@@ -527,7 +404,7 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
             variant="secondary"
             size="xl"
             className="w-full mt-6"
-            onClick={metamaskDelegation}
+            onClick={inchSwap}
           >
             Continue
           </Button>
