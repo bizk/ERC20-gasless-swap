@@ -20,7 +20,7 @@ const Index = () => {
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center">
               <span className="text-xl font-bold text-primary-foreground">⟠</span>
             </div>
-            <span className="text-xl font-bold gradient-text">DexSwap</span>
+            <span className="text-xl font-bold gradient-text">1ClickSwap</span>
           </div>
         </header>
 
@@ -35,11 +35,8 @@ const Index = () => {
             <>
               <div className="text-center mb-10 animate-fade-in">
                 <h1 className="text-4xl md:text-5xl font-bold mb-4">
-                  Swap tokens <span className="gradient-text">instantly</span>
+                  Swap tokens in <span className="gradient-text">one click</span>
                 </h1>
-                <p className="text-lg text-muted-foreground max-w-md mx-auto">
-                  Trade cryptocurrency tokens with minimal fees and maximum security
-                </p>
               </div>
               <SwapCard onSwapSuccess={setSwapResult} />
             </>
