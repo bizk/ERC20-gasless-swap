@@ -1,5 +1,5 @@
  // @ts-expect-error TS2589 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Token, tokens } from "@/data/tokens";
 import { TokenInput } from "./TokenInput";
@@ -8,7 +8,7 @@ import { ConnectWalletModal } from "./ConnectWalletModal";
 import { Button } from "@/components/ui/button";
 import { ArrowDownUp, Fuel, Info, CheckCircle2, ExternalLink, Copy } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
-import axios from 'axios';
+
 import {
   Dialog,
   DialogContent,
@@ -33,8 +33,8 @@ export interface SwapSuccessData {
   date: Date;
 }
 
-import { createPublicClient, erc20Abi, formatUnits, Hex, http, parseEther } from 'viem'
-import { sepolia, mainnet, base } from 'viem/chains'
+import { createPublicClient, Hex, http } from 'viem'
+import { mainnet } from 'viem/chains'
 import {  entryPoint07Address } from 'viem/account-abstraction'
 import { createSmartAccountClient } from "permissionless";
 
@@ -43,14 +43,15 @@ import {
   toMetaMaskSmartAccount, 
 } from "@metamask/smart-accounts-kit"
 
-import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+import { privateKeyToAccount } from "viem/accounts";
 
 import { useAccount, useConnect, useDisconnect, useWalletClient, usePublicClient } from "wagmi";
 import { createPimlicoClient } from "permissionless/clients/pimlico"
 import { prepareUserOperationForErc20Paymaster } from 'permissionless/experimental/pimlico';
-import { toSafeSmartAccount } from 'permissionless/accounts';
 import { buildGaslessUniswapCall, buildSmartAccount, ETH_TOKEN, USDC_TOKEN } from "@/lib/swap";
-import { getApprovalData } from "@/lib/1inch";
+import { getApprovalData, getSwapData } from "@/lib/dex";
+
+// import * as wagmiPermit from "wagmi-permit";
 
 export interface QuotationResponse {
   gasPrice: number;
@@ -157,7 +158,7 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     // Wallet is connected, proceed with swap
     setIsProcessing(true);
     try {
-      const result = await inchSwap();
+      const result = await smartaccountSwap();
       if (result) {
         setSwapResult(result);
         setShowSuccessDialog(true);
@@ -251,7 +252,7 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
       setPendingSwapAfterConnect(false);
       setTimeout(() => {
         setIsProcessing(true);
-        inchSwap()
+        smartaccountSwap()
           .then((result) => {
             if (result) {
               setSwapResult(result);
@@ -272,8 +273,123 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
     }
   }, [isConnected, pendingSwapAfterConnect, showConnectingWallet]);
 
+  const smartaccountSwap = async (): Promise<{
+    txHash: string;
+    fromAddress: string;
+    toAddress: string;
+    fee: string;
+    explorerUrl: string;
+  } | null> => {
+    try {
+      console.log("Starting swap...") // MEssage to screen here
 
-  const inchSwap = async (): Promise<{
+      // We would need to adapt the urls and http to adapt to the network
+      const pimlicoUrl = `https://api.pimlico.io/v2/1/rpc?apikey=${import.meta.env.VITE_PIMLICO_API_KEY}`
+  
+      const publicClient = createPublicClient({
+        chain: mainnet,
+        transport: http("https://eth.blockrazor.xyz"),
+      });
+       
+      const paymasterClient = createPimlicoClient({
+        transport: http(pimlicoUrl),
+        entryPoint: {
+          address: entryPoint07Address,
+          version: "0.7",
+        },
+      });
+  
+      const ownerAddress = address as Hex;
+      
+      const smartAccount = await toMetaMaskSmartAccount({
+        client: publicClient,
+        implementation: Implementation.Hybrid,
+        deployParams: [ownerAddress, [], [], []],
+        deploySalt: "0x",
+        signer: { walletClient },
+      })
+  
+      console.log("[dApp] Owner address: " + ownerAddress)
+      console.log("[dApp] Smart account address: https://etherscan.io/address/" + smartAccount?.address)
+      // Message: Creating swap in smart account https://etherscan.io/address/" + smartAccount?.address (Original wallet owneraddress)
+      
+      const smartAccountClient = createSmartAccountClient({
+        account: smartAccount,
+        chain: mainnet,
+        paymaster: paymasterClient,
+        bundlerTransport: http(
+          pimlicoUrl,
+        ),
+        userOperation: {
+          estimateFeesPerGas: async () =>
+            (await paymasterClient.getUserOperationGasPrice()).fast,
+            prepareUserOperation: prepareUserOperationForErc20Paymaster(paymasterClient),
+        },
+      });
+  
+      // const approvalData = await getApprovalData(fromToken?.address, fromAmount);
+      // console.log("[dApp] Approval operation data:", JSON.stringify(approvalData, null, 2));
+  
+      // // TODO study why value is 0n
+      // const approvalOpHash = await smartAccountClient.sendUserOperation({
+      //   account: smartAccount,
+      //   calls: [{
+      //     to: approvalData?.to as Hex,
+      //     data: approvalData?.data as Hex,
+      //     value: 0n // since it is a swap in the mainnet we use 0n 
+      //   }]
+      // })
+      // console.log("[dApp] Approval user operation hash:", approvalOpHash)
+  
+      // const approvalReceipt = await smartAccountClient.waitForUserOperationReceipt({ hash: approvalOpHash });
+      // console.log("[dApp] Approval receipt:", approvalReceipt)
+   
+      // ERC-20 permit
+      // const permitCalldata = await buildPermitCalldataWithViem({
+      //   client,
+      //   walletClient,
+      //   token: fromToken,
+      //   owner: ownerAddress,
+      //   spender: ownerAddress,
+      //   value: parseEther(fromAmount, "gwei"),
+      //   chainId: mainnet.id,
+      // });
+      
+      // console.log("[dApp] Permit calldata:", permitCalldata)
+      // From = smart account address |
+      const swapResponse = await getSwapData(smartAccount.address, fromToken?.address, toToken?.address, fromAmount);
+      console.log("[dApp] Swap response:", JSON.stringify(swapResponse, null, 2));
+
+      // Message: Processing swap
+      const swapHash = await smartAccountClient.sendUserOperation({
+        account: smartAccount,
+        calls: [{
+          to: swapResponse?.tx.to as Hex,
+          data: swapResponse?.tx.data as Hex,
+          value: swapResponse?.tx.value as bigint,
+        }]
+      })
+
+      console.log("[dApp] Swap user operation hash:", swapHash)
+  
+      const swapReceipt = await smartAccountClient.waitForUserOperationReceipt({ hash: swapHash });
+      console.log("[dApp] Swap receipt:", swapReceipt)
+      
+      
+      return {
+        txHash: swapResponse?.txHash || "",
+        fromAddress: address,
+        toAddress: address, // TODO: Replace with actual recipient address
+        fee: swapResponse?.fee || "0",
+        explorerUrl: `https://etherscan.io/tx/${swapResponse}`,
+      };
+    } catch (error) {
+      console.error("[dApp] Error swapping:", error);
+      return null;
+    }
+  }
+
+  const delegationSwap = async (): Promise<{
     txHash: string;
     fromAddress: string;
     toAddress: string;
@@ -324,34 +440,26 @@ export const SwapCard = ({ onSwapSuccess }: SwapCardProps) => {
       },
     });
 
-    const amount = "10"
-    const approvalData = await axios.get(`${import.meta.env.VITE_API_URL}/dex/approval?tokenAddress=${fromToken?.address}&amount=${amount}`);
-    console.log("APPROVAL DATA", approvalData.data);
+    const approvalData = await getApprovalData(toToken?.address, fromAmount);
+    console.log("[dApp] Approval operation data:", JSON.stringify(approvalData, null, 2));
 
-    // const { to, data, value } = approvalData.data;
-
-    // const txHash = await smartAccountClient.sendUserOperation({
+    // TODO study why value is 0n
+    // const approvalOpHash = await smartAccountClient.sendUserOperation({
     //   account: delegatorSmartAccount,
     //   calls: [{
-    //     to: to as Hex,
-    //     data: data as Hex,
-    //     value: 0n
+    //     to: approvalData?.to as Hex,
+    //     data: approvalData?.data as Hex,
+    //     value: 0n // since it is a swap in the mainnet we use 0n 
     //   }]
     // })
+    // console.log("[dApp] Approval user operation hash:", approvalOpHash)
 
-    // console.log("USER APPROVAL OP HASH", txHash)
-
-    // const approvalReceipt = await smartAccountClient.waitForUserOperationReceipt({ hash: txHash });
-    // console.log("Approval receipt", approvalReceipt)
+    // const approvalReceipt = await smartAccountClient.waitForUserOperationReceipt({ hash: approvalOpHash });
+    // console.log("[dApp] Approval receipt:", approvalReceipt)
  
-    // const swapResponse = await axios.post(`${import.meta.env.VITE_API_URL}/dex/swap`, {
-    //   "tokenSrc": "eth",
-    //   "tokenDst": "usdc",
-    //   "from": "0x1Db2876267D2AdC9CA7eA628D53006282e683d5d",
-    //   "chainId": 1,
-    //   "amount": 1
-    // });
-    // console.log("SWAP DATA", swapResponse.data);
+    // From = smart account address |
+    const swapResponse = await getSwapData(delegatorSmartAccount.address, fromToken?.address, toToken?.address, fromAmount);
+    console.log("[dApp] Swap response:", JSON.stringify(swapResponse, null, 2));
 
     // const { to: swapTo, data: swapData, value: swapValue } = swapResponse.data.tx;
     // console.log("SWAP TO", swapTo)

@@ -13,45 +13,6 @@ export class DexController {
     return this.dexService.getDex();
   }
 
-  @Get("/quotation")
-  async getQuotation(
-    @Query("from") from: string, 
-    @Query("chain") chainId: string, 
-    @Query("amount") amount: string,
-    @Query("tokenAddress") tokenAddress: string
-  ): Promise<any> {
-   console.log("GET QUOTATION", from, chainId, amount);
-
-   const url = "https://api.1inch.com/swap/v6.1/1/approve/transaction";
-
-   const config = {
-     headers: {
-       Authorization: `Bearer ${process.env.INCH_TOKEN}`,
-     },
-     params: {
-       tokenAddress: "0xa3C6530dfeAbC1dE3c97549E318054C871E5D0Bc",
-       amount: "10000",
-     },
-     paramsSerializer: {
-       indexes: null,
-     },
-   };
- 
-   try {
-     const response = await axios.get(url, config);
-     console.log(response.data);
-     return response.data;
-   } catch (error: any) {
-     console.error(error);
-     return {
-      status: 500,
-      message: "Error retrieving quotation",
-      data: (error as Error).message,
-     };
-   }
-
-  }
-
   @Post("/swap")
   async swap(
     @Body() swapRequest: SwapRequest
